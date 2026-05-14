@@ -11,3 +11,4 @@ airflow.cfg
 airflow.db
 CLAUDE.local.md
 dev
+.claude/

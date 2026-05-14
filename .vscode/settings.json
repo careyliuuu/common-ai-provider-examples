@@ -1,0 +1,7 @@
+{
+  "// note": "Hides upstream example DAGs from the VS Code file explorer so the 3 demo_*.py files are easier to find. Files stay on disk for reference; .airflowignore separately tells Airflow to skip them.",
+  "files.exclude": {
+    "**/dags/example_*.py": true,
+    "**/dags/__pycache__": true
+  }
+}

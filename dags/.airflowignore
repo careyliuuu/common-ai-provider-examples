@@ -1,0 +1,5 @@
+# Airflow 3 default ignore syntax is `glob` (one pattern per line).
+# The example_*.py reference DAGs stay in the repo for adaptation reference,
+# but Airflow's scheduler/UI skips them so only the demo_*.py DAGs show up.
+# To re-enable an example, comment out the line below or rename the file.
+example_*.py
