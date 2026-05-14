@@ -26,7 +26,7 @@ Customers: athenahealth · Saks Fifth Avenue · popety.io
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -75,26 +75,30 @@ class BatchInferenceSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _mock_triage(record: dict) -> dict:
+    """Rule-based triage that mimics a clinical AI assistant's reasoning."""
     complaint = record["chief_complaint"].lower()
     vitals = record["vitals"]
     history = " ".join(record["history"]).lower()
     meds = " ".join(record["current_medications"]).lower()
 
     flags: list[str] = []
-    if "prior mi" in history:
-        flags.append("prior MI — high cardiac risk")
+    if "prior mi" in history or "cabg" in history:
+        flags.append("cardiac history — elevated risk")
     if "warfarin" in meds or "anticoagul" in history:
         flags.append("anticoagulated — bleeding risk")
     if vitals["spo2"] < 94:
         flags.append(f"SpO2 {vitals['spo2']}% — hypoxic")
     if "allerg" in history and "allerg" in complaint:
         flags.append("known allergen exposure")
+    if vitals["temp"] > 100.4:
+        flags.append(f"febrile ({vitals['temp']}°F)")
 
-    # EMERGENT: life-threatening presentations
+    # EMERGENT — life-threatening presentations.
+    # "worst of life" / "thunderclap" headache phrasing = classic SAH indicator.
     if (
         vitals["spo2"] < 94
         or "chest pain" in complaint
-        or "worst headache" in complaint
+        or ("headache" in complaint and ("worst" in complaint or "thunderclap" in complaint))
         or ("breathing" in complaint and "allerg" in history)
     ):
         return ClinicalTriageResult(
@@ -106,7 +110,31 @@ def _mock_triage(record: dict) -> dict:
             flags=flags,
         ).model_dump()
 
-    # ROUTINE: stable, non-urgent presentations
+    # URGENT with LOW confidence — vague presentations in high-risk patients
+    # trigger the human-review path because the model isn't sure.
+    vague_phrases = ("feels off", "something feels", "general unease", "doesn't feel right")
+    if any(p in complaint for p in vague_phrases):
+        return ClinicalTriageResult(
+            patient_id=record["patient_id"],
+            acuity_level="URGENT",
+            primary_concern=record["chief_complaint"],
+            recommended_pathway="expedited_review",
+            confidence="LOW",
+            flags=flags + ["non-specific complaint — clinical correlation required"],
+        ).model_dump()
+
+    # URGENT — clear moderate-severity presentations (fever, vomiting, etc.)
+    if "vomit" in complaint or vitals["temp"] > 100.4 or "abdominal pain" in complaint:
+        return ClinicalTriageResult(
+            patient_id=record["patient_id"],
+            acuity_level="URGENT",
+            primary_concern=record["chief_complaint"],
+            recommended_pathway="expedited_review",
+            confidence="HIGH",
+            flags=flags,
+        ).model_dump()
+
+    # ROUTINE — stable, non-urgent presentations
     if "follow-up" in complaint or ("sore throat" in complaint and vitals["hr"] < 80):
         return ClinicalTriageResult(
             patient_id=record["patient_id"],
@@ -117,7 +145,7 @@ def _mock_triage(record: dict) -> dict:
             flags=flags,
         ).model_dump()
 
-    # URGENT: needs attention within 1 hour
+    # Default — URGENT with MEDIUM confidence when nothing else fits
     return ClinicalTriageResult(
         patient_id=record["patient_id"],
         acuity_level="URGENT",
@@ -137,7 +165,7 @@ def _mock_inference_summary(
         ClinicalTriageResult.model_validate(r) if isinstance(r, dict) else r
         for r in triage_results
     ]
-    elapsed = (datetime.utcnow() - datetime.fromisoformat(batch_start)).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(batch_start)).total_seconds()
     total = len(results)
     emergent = len(routing.get("emergent", []))
     urgent = len(routing.get("urgent", []))
@@ -183,7 +211,7 @@ def demo_inference_routing():
     @task
     def record_batch_start() -> str:
         """Capture the batch start timestamp for processing-time metrics."""
-        return datetime.utcnow().isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     @task
     def ingest_patient_records() -> list[dict]:
@@ -192,7 +220,11 @@ def demo_inference_routing():
         In production: poll an HL7/FHIR API, read from an S3 landing zone,
         or consume from a Kafka topic. Airflow's @hourly schedule guarantees
         this runs on time, retries on failure, and never double-processes.
+
+        The 7 sample patients are chosen so all four downstream routes fire:
+        EMERGENT, URGENT, ROUTINE, and LOW-CONFIDENCE → human review.
         """
+        print(f"[{'MOCK_LLM=true — rule-based mock responses' if MOCK_LLM else 'MOCK_LLM=false — live pydanticai LLM calls'}]")
         return [
             {
                 "patient_id": "PT-10042",
@@ -238,6 +270,24 @@ def demo_inference_routing():
                 "history": ["Atrial fibrillation", "Warfarin therapy"],
                 "current_medications": ["Warfarin", "Digoxin"],
                 "arrival_mode": "family",
+            },
+            {
+                "patient_id": "PT-10047",
+                "age": 42,
+                "chief_complaint": "Persistent vomiting and 101°F fever for 36 hours after travel",
+                "vitals": {"bp": "120/80", "hr": 96, "spo2": 98, "temp": 101.2},
+                "history": ["Recent travel to Bangkok"],
+                "current_medications": [],
+                "arrival_mode": "walk-in",
+            },
+            {
+                "patient_id": "PT-10048",
+                "age": 56,
+                "chief_complaint": "Something feels off — vague chest tightness and fatigue",
+                "vitals": {"bp": "138/86", "hr": 88, "spo2": 97, "temp": 98.7},
+                "history": ["Hypertension", "Prior CABG 2019"],
+                "current_medications": ["Atenolol", "Atorvastatin"],
+                "arrival_mode": "self",
             },
         ]
 
@@ -398,7 +448,7 @@ def demo_inference_routing():
                 for r in triage_results
             ]
             elapsed = (
-                datetime.utcnow() - datetime.fromisoformat(batch_start)
+                datetime.now(timezone.utc) - datetime.fromisoformat(batch_start)
             ).total_seconds()
             lines = [
                 "Batch Inference Monitoring Report",

@@ -24,7 +24,7 @@ Customers: aampe · Notion · Red Hat
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -118,23 +118,42 @@ def _mock_asset_context(position: dict) -> dict:
 
 
 def _mock_portfolio_summary(asset_contexts: list[dict]) -> dict:
+    """Aggregate per-asset risk into a portfolio-level narrative — derived from data."""
     risks = [c.get("risk_level", "MEDIUM") for c in asset_contexts]
-    highest = max(risks, key=lambda r: _RISK_ORDER.index(r))
+    highest = max(risks, key=lambda r: _RISK_ORDER.index(r)) if risks else "LOW"
     for_review = [c["ticker"] for c in asset_contexts if c.get("recommended_action") != "HOLD"]
-    n_high = sum(1 for r in risks if r in ("HIGH", "CRITICAL"))
+    n_elevated = sum(1 for r in risks if r in ("HIGH", "CRITICAL"))
+
+    # Highest-risk asset drives the top_concern; ties broken by appearance order
+    top_asset = max(
+        asset_contexts,
+        key=lambda c: _RISK_ORDER.index(c.get("risk_level", "LOW")),
+        default=None,
+    )
+    if top_asset is not None and top_asset.get("risk_level") in ("HIGH", "CRITICAL"):
+        top_concern = (
+            f"{top_asset['ticker']} ({top_asset['risk_level'].lower()} risk): "
+            f"{top_asset.get('summary', '').rstrip('.')}."
+        )
+    else:
+        top_concern = "No single position presents a critical risk; monitor aggregate exposure."
+
+    if n_elevated:
+        narrative = (
+            f"Portfolio of {len(asset_contexts)} positions shows {highest.lower()} aggregate risk. "
+            f"{n_elevated} position(s) flagged for elevated volatility or adverse news flow."
+        )
+    else:
+        narrative = (
+            f"Portfolio of {len(asset_contexts)} positions is stable; "
+            f"all positions show low-to-moderate risk profiles."
+        )
 
     return PortfolioSummary(
         overall_risk=highest,
-        narrative=(
-            f"Portfolio of {len(asset_contexts)} positions shows {highest.lower()} aggregate risk. "
-            f"{n_high} position(s) flagged for elevated volatility or adverse news flow. "
-            "Semiconductor concentration is the dominant risk factor this cycle."
-        ),
-        top_concern=(
-            "NVDA semiconductor concentration at $3.75M with 38% 30-day volatility "
-            "amid active export restriction uncertainty."
-        ),
-        assets_requiring_review=for_review if for_review else ["NVDA"],
+        narrative=narrative,
+        top_concern=top_concern,
+        assets_requiring_review=for_review,
     ).model_dump()
 
 
@@ -159,6 +178,7 @@ def demo_context_assembly():
 
         In production: swap for SnowflakeHook, BigQueryHook, or an S3 sensor.
         """
+        print(f"[{'MOCK_LLM=true — rule-based mock responses' if MOCK_LLM else 'MOCK_LLM=false — live pydanticai LLM calls'}]")
         return [
             {
                 "ticker": "AAPL",
@@ -314,7 +334,7 @@ def demo_context_assembly():
             print(f"  {ctx.ticker:6s}  [{ctx.risk_level:8s}]  → {ctx.recommended_action}")
 
         return {
-            "assembled_at": datetime.utcnow().isoformat(),
+            "assembled_at": datetime.now(timezone.utc).isoformat(),
             "mock_mode": MOCK_LLM,
             "portfolio_risk": portfolio_summary.overall_risk,
             "assets_for_review": portfolio_summary.assets_requiring_review,

@@ -26,7 +26,7 @@ Customers: Wix · Ramp · Recast
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -108,7 +108,7 @@ def _mock_review_branch(review_packet: dict) -> str:
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
-    tags=["demo", "ai", "hitl", "human-in-the-loop", "pillar-2"],
+    tags=["demo", "ai", "hitl", "pillar-2"],
     doc_md=__doc__,
 )
 def demo_hitl_pipeline():
@@ -120,7 +120,14 @@ def demo_hitl_pipeline():
         In production: query the Airflow REST API, Astro Observe webhooks,
         or a monitoring system (Datadog, CloudWatch) for recent failures,
         scheduling delays, and unexpected task states.
+
+        Note: with this default data (OOM crash + scheduling delay), the HITL
+        gate routes to `manual_escalate` because severity is CRITICAL and the
+        fix is not auto-remediable. To see the `auto_remediate` path, change
+        the ml_feature_pipeline anomaly's error_message to remove "memory" /
+        "OOM" wording.
         """
+        print(f"[{'MOCK_LLM=true — rule-based mock responses' if MOCK_LLM else 'MOCK_LLM=false — live pydanticai LLM calls'}]")
         return [
             {
                 "dag_id": "customer_data_sync",
@@ -221,7 +228,7 @@ def demo_hitl_pipeline():
             "confidence": report.confidence,
             "anomaly_count": len(anomalies),
             "mock_mode": MOCK_LLM,
-            "review_requested_at": datetime.utcnow().isoformat(),
+            "review_requested_at": datetime.now(timezone.utc).isoformat(),
         }
 
     # ------------------------------------------------------------------
@@ -272,8 +279,8 @@ def demo_hitl_pipeline():
         print("\nHUMAN APPROVED — Applying auto-remediation")
         print(f"Fix:           {review_packet['recommended_fix']}")
         print(f"Affected DAGs: {', '.join(review_packet['affected_dags'])}")
-        print(f"Completed at:  {datetime.utcnow().isoformat()}")
-        return f"Remediation applied at {datetime.utcnow().isoformat()}"
+        print(f"Completed at:  {datetime.now(timezone.utc).isoformat()}")
+        return f"Remediation applied at {datetime.now(timezone.utc).isoformat()}"
 
     @task
     def manual_escalate(review_packet: dict) -> str:
@@ -286,7 +293,7 @@ def demo_hitl_pipeline():
         print(f"Severity:  {review_packet['severity']}")
         print(f"Diagnosis: {review_packet['diagnosis']}")
         print("Actions:   PagerDuty incident created → Jira ticket opened → #data-oncall notified")
-        return f"Escalation created at {datetime.utcnow().isoformat()}"
+        return f"Escalation created at {datetime.now(timezone.utc).isoformat()}"
 
     # -----------------------------------------------------------------------
     # Pipeline wiring
