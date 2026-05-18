@@ -12,3 +12,4 @@ airflow.db
 CLAUDE.local.md
 dev
 .claude/
+.vscode/
